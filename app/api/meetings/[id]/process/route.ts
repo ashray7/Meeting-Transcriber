@@ -2,9 +2,13 @@ import { NextResponse } from 'next/server';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { getMeeting, saveMeeting, addTasks, saveCandidates, hydrateProjectSnapshot } from '@/lib/store';
-import { transcribe } from '@/lib/providers';
+import { transcribeWithAudio } from '@/lib/providers';
+import { getDiarizationService } from '@/lib/diarization-service';
+import { alignWhisperWithDiarization, formatSpeakerAwareTranscript } from '@/lib/alignment';
+import { randomUUID } from 'node:crypto';
 import { analyzeMeetingIntelligence } from '@/lib/meeting-intelligence-provider';
 import { getSelectedModel, LOCAL_MODELS } from '@/lib/model-settings';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 const running = new Set<string>();
@@ -21,50 +25,170 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     ? `Transcribing with ${process.env.OPENAI_TRANSCRIPTION_MODEL || 'whisper-1'} via OpenAI.`
     : provider === 'demo' ? 'Loading demo transcript.' : `Transcribing with Whisper ${process.env.WHISPER_MODEL || 'small'} on GPU.`;
   running.add(id);
-  meeting.status = 'processing'; meeting.error = null;
+  logger.info('Queuing meeting processing', { meetingId: id, inputType: meeting.inputType, provider });
+
+  meeting.status = 'queued';
+  meeting.error = null;
   meeting.diagnostic = meeting.inputType === 'notes' ? 'Analyzing meeting notes.' : transcriptionDiagnostic;
-  meeting.progress = meeting.inputType === 'notes' ? 45 : 18;
-  meeting.stage = meeting.inputType === 'notes' ? 'Analyzing meeting and identifying tasks' : 'Transcribing';
+  meeting.progress = meeting.inputType === 'notes' ? 35 : 10;
+  meeting.stage = meeting.inputType === 'notes' ? 'Analyzing meeting and identifying tasks' : 'Queued';
   meeting.updatedAt = new Date().toISOString();
   await saveMeeting(meeting);
 
   void (async () => {
     try {
       if (meeting.inputType === 'recording') {
-        meeting.stage = 'Transcribing'; meeting.diagnostic = transcriptionDiagnostic; meeting.progress = 18;
-        meeting.updatedAt = new Date().toISOString(); await saveMeeting(meeting);
+        meeting.status = 'transcribing';
+        meeting.stage = 'Transcribing';
+        meeting.diagnostic = transcriptionDiagnostic;
+        meeting.progress = 20;
+        meeting.updatedAt = new Date().toISOString();
+        await saveMeeting(meeting);
+        logger.info('Starting audio transcription', { meetingId: id, fileUrl: meeting.fileUrl });
+
         const bytes = await readFile(path.join(process.cwd(), 'uploads', meeting.fileUrl));
         const file = new File([bytes], meeting.originalFileName);
-        meeting.transcript = await transcribe(file);
-        if (!meeting.transcript.trim()) throw new Error('No speech was detected in the recording.');
-        await saveMeeting(meeting);
-        const refreshed = await getMeeting(id);
-        if (refreshed.meeting) meeting.transcriptSegments = refreshed.meeting.transcriptSegments;
+        const transcriptionResult = await transcribeWithAudio(file);
+        try {
+          if (!transcriptionResult.transcript.trim() && !transcriptionResult.segments.length) {
+            throw new Error('No speech was detected in the recording.');
+          }
+
+          const diarizationService = getDiarizationService();
+          const availability = await diarizationService.isAvailable();
+
+          let alignedSegments;
+          if (availability.available && transcriptionResult.normalizedAudioPath) {
+            meeting.stage = 'Diarizing speakers';
+            meeting.diagnostic = 'Running pyannote speaker diarization...';
+            meeting.progress = 32;
+            meeting.updatedAt = new Date().toISOString();
+            await saveMeeting(meeting);
+
+            try {
+              const diarizationStart = Date.now();
+              const diarizationResult = await diarizationService.diarize(transcriptionResult.normalizedAudioPath);
+              const diarizationDurationMs = Date.now() - diarizationStart;
+
+              meeting.diarizationStatus = 'completed';
+              meeting.speakerCount = diarizationResult.speakerCount;
+              meeting.diarizationError = null;
+
+              const alignmentStart = Date.now();
+              alignedSegments = alignWhisperWithDiarization(transcriptionResult.segments, diarizationResult.segments, id);
+              const alignmentDurationMs = Date.now() - alignmentStart;
+
+              meeting.transcript = formatSpeakerAwareTranscript(alignedSegments);
+              logger.info('Diarization and alignment completed', {
+                meetingId: id,
+                speakerCount: diarizationResult.speakerCount,
+                diarizationDurationMs,
+                alignmentDurationMs
+              });
+            } catch (diarError) {
+              const errorMsg = diarError instanceof Error ? diarError.message : 'Diarization failed';
+              logger.warn('Speaker diarization failed; continuing with un-diarized transcript', {
+                meetingId: id,
+                error: errorMsg
+              });
+              meeting.diarizationStatus = 'failed';
+              meeting.diarizationError = errorMsg;
+              alignedSegments = alignWhisperWithDiarization(transcriptionResult.segments, [], id);
+              meeting.transcript = transcriptionResult.transcript;
+            }
+          } else {
+            meeting.diarizationStatus = 'unavailable';
+            meeting.diarizationError = availability.reason || 'pyannote.audio is not available';
+            alignedSegments = alignWhisperWithDiarization(transcriptionResult.segments, [], id);
+            meeting.transcript = transcriptionResult.transcript;
+          }
+
+          meeting.transcriptSegments = alignedSegments.map((s, idx) => ({
+            id: s.id || randomUUID(),
+            meetingId: id,
+            sequence: idx,
+            startMs: s.startMs,
+            endMs: s.endMs,
+            start: s.startMs !== null ? s.startMs / 1000 : null,
+            end: s.endMs !== null ? s.endMs / 1000 : null,
+            speaker: s.speaker,
+            speakerId: s.speakerId,
+            speakerConfidence: s.speakerConfidence,
+            text: s.text
+          }));
+
+          meeting.status = 'transcribed';
+          meeting.stage = 'Transcribed';
+          meeting.progress = 45;
+          meeting.updatedAt = new Date().toISOString();
+          await saveMeeting(meeting);
+          logger.info('Audio transcription and diarization stage finished', {
+            meetingId: id,
+            transcriptLength: meeting.transcript.length,
+            segmentCount: meeting.transcriptSegments.length,
+            diarizationStatus: meeting.diarizationStatus
+          });
+        } finally {
+          await transcriptionResult.cleanup?.();
+        }
       }
 
+      meeting.status = 'analyzing';
       const selectedModel = provider === 'ollama' ? await getSelectedModel()
         : provider === 'openai' ? process.env.OPENAI_ANALYSIS_MODEL || 'gpt-4o-mini' : undefined;
       const modelLabel = LOCAL_MODELS.find(model => model.id === selectedModel)?.label || selectedModel || 'demo provider';
       const project = await hydrateProjectSnapshot(meeting.projectSnapshot);
+      logger.info('Starting meeting intelligence analysis', { meetingId: id, model: selectedModel, provider });
+
       const result = await analyzeMeetingIntelligence(meeting, project, selectedModel, async stage => {
-        meeting.stage = stage; meeting.diagnostic = `${stage} with ${modelLabel}.`;
+        meeting.stage = stage;
+        meeting.diagnostic = `${stage} with ${modelLabel}.`;
         meeting.progress = stage.includes('draft') ? 88 : stage.includes('retriev') ? 76 : 63;
-        meeting.updatedAt = new Date().toISOString(); await saveMeeting(meeting);
+        meeting.updatedAt = new Date().toISOString();
+        await saveMeeting(meeting);
       });
-      meeting.summary = result.summary; meeting.topics = result.topics;
-      meeting.decisions = result.decisions; meeting.openQuestions = result.openQuestions;
-      meeting.stage = 'Saving task candidates'; meeting.diagnostic = 'Saving grounded task candidates.';
-      meeting.progress = 94; meeting.updatedAt = new Date().toISOString(); await saveMeeting(meeting);
+
+      meeting.summary = result.summary;
+      meeting.topics = result.topics;
+      meeting.decisions = result.decisions;
+      meeting.openQuestions = result.openQuestions;
+      meeting.stage = 'Saving task candidates';
+      meeting.diagnostic = 'Saving grounded task candidates.';
+      meeting.progress = 94;
+      meeting.updatedAt = new Date().toISOString();
+      await saveMeeting(meeting);
+
       await saveCandidates(id, result.candidates);
       if (result.tasks.length) await addTasks(result.tasks);
-      meeting.status = 'completed'; meeting.stage = 'Complete'; meeting.progress = 100;
-      meeting.error = null; meeting.diagnostic = 'Meeting processing complete.';
-      meeting.updatedAt = new Date().toISOString(); await saveMeeting(meeting);
+
+      const finalStatus = result.tasks.length ? 'review_required' : 'complete';
+      meeting.status = finalStatus;
+      meeting.stage = 'Complete';
+      meeting.progress = 100;
+      meeting.error = null;
+      meeting.diagnostic = `Analysis finished with ${result.tasks.length} task candidate(s).`;
+      meeting.updatedAt = new Date().toISOString();
+      await saveMeeting(meeting);
+
+      logger.info('Meeting processing succeeded', {
+        meetingId: id,
+        status: finalStatus,
+        taskCount: result.tasks.length,
+        candidateCount: result.candidates.length,
+        decisionCount: result.decisions.length
+      });
     } catch (error) {
-      meeting.status = 'failed'; meeting.stage = null; meeting.diagnostic = null;
+      meeting.status = 'failed';
+      meeting.stage = null;
+      meeting.diagnostic = null;
       meeting.error = error instanceof Error ? error.message : 'Processing failed. Please retry.';
-      meeting.updatedAt = new Date().toISOString(); await saveMeeting(meeting);
-    } finally { running.delete(id); }
+      meeting.updatedAt = new Date().toISOString();
+      await saveMeeting(meeting);
+      logger.error('Meeting processing failed', { meetingId: id }, error);
+    } finally {
+      running.delete(id);
+    }
   })();
+
   return NextResponse.json({ status: 'processing' });
 }

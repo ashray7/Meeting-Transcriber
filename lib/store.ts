@@ -1,6 +1,6 @@
 import path from 'node:path';
 import {SqliteStorage} from './storage';
-import {Meeting,ProjectKnowledgeChunk,ProjectSnapshot,Task,TaskCandidate} from './types';
+import {Meeting,ProjectKnowledgeChunk,ProjectSnapshot,Task,TaskCandidate,Ticket,UpdateTicketInput} from './types';
 import {ProjectProfileInput} from './validation';
 
 const dataDir=process.env.MEETING_DATA_DIR||path.join(process.cwd(),'data');
@@ -13,6 +13,12 @@ export const saveCandidates=(meetingId:string,candidates:TaskCandidate[])=>stora
 export const saveTask=(task:Task)=>storage.saveTask(task);
 export const deleteTask=(id:string)=>storage.deleteTask(id);
 export const getTask=(id:string)=>storage.getTask(id);
+export const saveTicket=(ticket:Ticket)=>storage.saveTicket(ticket);
+export const getTicket=(id:string)=>storage.getTicket(id);
+export const findTicketBySourceTaskId=(sourceTaskId:string)=>storage.findTicketBySourceTaskId(sourceTaskId);
+export const listTickets=(filter?:{projectId?:string;meetingId?:string;status?:string})=>storage.listTickets(filter);
+export const updateTicket=(id:string,patch:UpdateTicketInput)=>storage.updateTicket(id,patch);
+export const deleteTicket=(id:string)=>storage.deleteTicket(id);
 export const listProjects=()=>storage.listProjects();
 export const getProject=(id:string)=>storage.getProject(id);
 export const saveProject=(profile:ProjectProfileInput&{id:string;createdAt?:string;updatedAt?:string})=>storage.saveProject(profile);
@@ -22,4 +28,7 @@ export const ingestProjectDocument=(projectId:string,filename:string,bytes:Uint8
 export const deleteProjectDocument=(projectId:string,documentId:string)=>storage.deleteProjectDocument(projectId,documentId);
 export const reprocessProjectDocument=(projectId:string,documentId:string)=>storage.reprocessProjectDocument(projectId,documentId);
 export const searchProjectKnowledge=(projectId:string,query:string,limit?:number,versionIds?:string[]):Promise<ProjectKnowledgeChunk[]>=>storage.searchProjectKnowledge(projectId,query,limit,versionIds);
+export const getSpeakerMappings=(meetingId:string)=>storage.getSpeakerMappings(meetingId);
+export const setSpeakerMapping=(meetingId:string,speakerId:string,memberId:string|null)=>storage.setSpeakerMapping(meetingId,speakerId,memberId);
 export const closeStorage=()=>storage.close();
+

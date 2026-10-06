@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { CreateTicketInput, MeetingTaskEvidence, Priority, ProjectReferenceEvidence, ProjectSnapshot, Task, Ticket, TicketStatus, UpdateTicketInput } from './types';
 import { Storage } from './storage';
+import { storage as defaultStorage } from './store';
 
 export interface TicketProvider {
   readonly id: string;
@@ -59,8 +60,11 @@ export function buildTicketContent(task: Task, projectSnapshot?: ProjectSnapshot
 export class InternalTicketProvider implements TicketProvider {
   readonly id = 'internal';
   readonly name = 'Internal Workspace Tracker';
+  private readonly storage: Storage;
 
-  constructor(private readonly storage: Storage) {}
+  constructor(storage?: Storage) {
+    this.storage = storage || defaultStorage;
+  }
 
   async createTicket(input: CreateTicketInput): Promise<Ticket> {
     // Idempotent: check if ticket already exists for sourceTaskId
@@ -207,3 +211,4 @@ export async function createTicketForTask(
 
   return { ticket, alreadyExisted: false };
 }
+
