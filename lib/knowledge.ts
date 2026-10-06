@@ -1,0 +1,30 @@
+import {parse as parseCsv} from 'csv-parse/sync';
+import {getDocument} from 'pdfjs-dist/legacy/build/pdf.mjs';
+import {randomUUID} from 'node:crypto';
+import path from 'node:path';
+import {ProjectKnowledgeChunk} from './types';
+
+export const SUPPORTED_DOCUMENT_TYPES=['pdf','csv','txt','md','mdx','json','yaml','yml','toml','ts','tsx','js','jsx','py','sql'] as const;
+export const MAX_DOCUMENT_BYTES=25*1024*1024;
+const MIME_BY_EXTENSION:Record<string,string>={pdf:'application/pdf',csv:'text/csv',txt:'text/plain',md:'text/markdown',mdx:'text/markdown',json:'application/json',yaml:'application/yaml',yml:'application/yaml',toml:'application/toml',ts:'text/typescript',tsx:'text/tsx',js:'text/javascript',jsx:'text/jsx',py:'text/x-python',sql:'application/sql'};
+export type ExtractedChunk=ProjectKnowledgeChunk;
+export type ExtractionResult={chunks:ExtractedChunk[];metadata:{encoding:string;characters:number;checksum:string|null;pageCount?:number;rowCount?:number;columnCount?:number;columns?:string[]}};
+export function validateDocumentFilename(filename:string){if(!filename||filename.length>255||(/[\\/]/.test(filename)||[...filename].some(char=>char.charCodeAt(0)<32||char.charCodeAt(0)===127))||filename==='.'||filename==='..'||filename.includes('..'))throw new Error('Invalid document filename. Use a filename without paths or control characters.');const extension=path.extname(filename).slice(1).toLocaleLowerCase();if(!SUPPORTED_DOCUMENT_TYPES.includes(extension as typeof SUPPORTED_DOCUMENT_TYPES[number]))throw new Error(`Unsupported document type .${extension||'(none)'}. Supported types: ${SUPPORTED_DOCUMENT_TYPES.join(', ')}.`);return{extension,type:MIME_BY_EXTENSION[extension]};}
+export function normalizeDocumentText(input:string){return input.replace(/^\uFEFF/,'').replace(/\r\n?/g,'\n').split('\u0000').join('').normalize('NFC').trim();}
+function splitText(text:string,maxChars=1800){const blocks=text.split(/\n\s*\n/).map(s=>s.trim()).filter(Boolean);const result:string[]=[];let current='';for(const block of blocks){if(block.length>maxChars){if(current){result.push(current);current=''}for(let i=0;i<block.length;i+=maxChars)result.push(block.slice(i,i+maxChars));continue}if(current&&current.length+block.length+2>maxChars){result.push(current);current=block}else current=current?`${current}\n\n${block}`:block}if(current)result.push(current);return result;}
+function chunksForText(projectId:string,documentId:string,versionId:string,filename:string,type:string,text:string,pageNumber:number|null=null){return splitText(text).map((chunk,index)=>({projectId,documentId,versionId,filename,type,chunkId:randomUUID(),text:chunk,pageNumber,rowNumber:null,rowEndNumber:null,sourceMetadata:{chunk:index+1}}))}
+async function extractPdf(bytes:Uint8Array,projectId:string,documentId:string,versionId:string,filename:string,type:string):Promise<ExtractionResult>{
+ let pdf:Awaited<ReturnType<typeof getDocument>['promise']>|undefined;
+ try{pdf=await getDocument({data:bytes,useSystemFonts:true,disableFontFace:true}).promise;const chunks:ExtractedChunk[]=[];for(let pageNumber=1;pageNumber<=pdf.numPages;pageNumber++){const page=await pdf.getPage(pageNumber);const content=await page.getTextContent();const text=normalizeDocumentText(content.items.map(item=>'str' in item?item.str:'').filter(Boolean).join(' '));if(text)for(const chunk of chunksForText(projectId,documentId,versionId,filename,type,text,pageNumber))chunks.push(chunk);page.cleanup()}if(!chunks.length)throw new Error('This PDF has no extractable text. It may be scanned and requires OCR.');return{chunks,metadata:{encoding:'pdf-text',characters:chunks.reduce((sum,x)=>sum+x.text.length,0),checksum:null,pageCount:pdf.numPages}}}finally{await pdf?.destroy()}
+}
+function decodeUtf8(bytes:Uint8Array){try{return new TextDecoder('utf-8',{fatal:true}).decode(bytes)}catch{throw new Error('Document is not valid UTF-8 text.')}}
+export async function extractDocument(bytes:Uint8Array,filename:string,projectId:string,documentId:string,versionId:string):Promise<ExtractionResult>{
+ const {extension,type}=validateDocumentFilename(filename);if(bytes.byteLength>MAX_DOCUMENT_BYTES)throw new Error(`Document exceeds the ${MAX_DOCUMENT_BYTES/1024/1024} MB upload limit.`);if(!bytes.byteLength)throw new Error('Document is empty.');
+ if(extension==='pdf')return extractPdf(bytes,projectId,documentId,versionId,filename,type);
+ const source=decodeUtf8(bytes);let text=normalizeDocumentText(source);if(extension==='json'){try{text=JSON.stringify(JSON.parse(text),null,2)}catch{throw new Error('JSON document is invalid.') }}
+ if(extension==='csv'){
+  let records:string[][];try{records=parseCsv(text,{bom:true,skip_empty_lines:true,relax_column_count:false,record_delimiter:['\r\n','\n','\r']}) as string[][]}catch(error){throw new Error(`CSV extraction failed: ${error instanceof Error?error.message:'invalid CSV'}`)}
+  if(!records.length)throw new Error('CSV document has no header row.');const width=Math.max(...records.map(row=>row.length));const headers=Array.from({length:width},(_,i)=>records[0][i]?.trim()||`column_${i+1}`);if(new Set(headers.map(x=>x.toLocaleLowerCase())).size!==headers.length)throw new Error('CSV headers must be unique.');const rows=records.slice(1).map((record,index)=>({values:headers.map((header,i)=>[header,(record[i]||'').trim()]),rowNumber:index+2}));const chunks:ExtractedChunk[]=[];for(const row of rows){const rowText=row.values.map(([key,value])=>`${key}: ${value}`).join(' | ');for(const part of splitText(rowText,1800))chunks.push({projectId,documentId,versionId,filename,type,chunkId:randomUUID(),text:part,pageNumber:null,rowNumber:row.rowNumber,rowEndNumber:row.rowNumber,sourceMetadata:{row:row.rowNumber,columns:headers}})}return{chunks,metadata:{encoding:'utf-8',characters:text.length,checksum:null,rowCount:rows.length,columnCount:headers.length,columns:headers}}
+ }
+ if(!text)throw new Error('Document contains no extractable text.');const chunks=chunksForText(projectId,documentId,versionId,filename,type,text);return{chunks,metadata:{encoding:'utf-8',characters:text.length,checksum:null}}
+}

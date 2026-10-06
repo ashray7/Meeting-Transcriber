@@ -1,0 +1,8 @@
+import {NextResponse} from 'next/server';
+import {getProject,ingestProjectDocument} from '@/lib/store';
+import {MAX_DOCUMENT_BYTES,validateDocumentFilename} from '@/lib/knowledge';
+
+export const runtime='nodejs';
+type Context={params:Promise<{id:string}>};
+export async function GET(_:Request,{params}:Context){const {id}=await params;const project=await getProject(id);return project?NextResponse.json(project.documents):NextResponse.json({error:'Project profile not found.'},{status:404})}
+export async function POST(request:Request,{params}:Context){const {id}=await params;let filename:string|undefined;try{if(!await getProject(id))return NextResponse.json({error:'Project profile not found.'},{status:404});const form=await request.formData();const file=form.get('file');if(!(file instanceof File))return NextResponse.json({error:'Choose a document file to upload.'},{status:400});filename=file.name;validateDocumentFilename(file.name);if(!file.size)return NextResponse.json({error:'Document is empty.'},{status:400});if(file.size>MAX_DOCUMENT_BYTES)return NextResponse.json({error:`Document exceeds the ${MAX_DOCUMENT_BYTES/1024/1024} MB upload limit.`},{status:413});const document=await ingestProjectDocument(id,file.name,new Uint8Array(await file.arrayBuffer()));return NextResponse.json(document,{status:201})}catch(error){const message=error instanceof Error?error.message:'Document upload failed.';const document=filename?(await getProject(id))?.documents.find(item=>item.filename.toLocaleLowerCase()===filename?.toLocaleLowerCase()):undefined;return NextResponse.json({error:message,document},{status:document?422:400})}}

@@ -1,2 +1,2 @@
 import {notFound} from 'next/navigation';import {getMeeting} from '@/lib/store';import {MeetingDetail} from '@/components/meeting-detail';
-export const dynamic='force-dynamic';export default async function MeetingPage({params}:{params:Promise<{id:string}>}){const {id}=await params;const data=await getMeeting(id);if(!data.meeting)notFound();return <MeetingDetail initial={{meeting:data.meeting,tasks:data.tasks}}/>}
+export const dynamic='force-dynamic';export default async function MeetingPage({params}:{params:Promise<{id:string}>}){const {id}=await params;const data=await getMeeting(id);if(!data.meeting)notFound();return <MeetingDetail initial={{meeting:data.meeting,tasks:data.tasks,candidates:data.candidates}}/>}

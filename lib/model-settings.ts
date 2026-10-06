@@ -10,9 +10,9 @@ export const LOCAL_MODELS = [
 ] as const;
 export type LocalModel=typeof LOCAL_MODELS[number]['id'];
 const configPath=path.join(process.cwd(),'data','settings.json');
+const fallbackModel=():LocalModel=>{const env=process.env.OLLAMA_MODEL;return (LOCAL_MODELS.some(m=>m.id===env)?env:'qwen3:8b') as LocalModel};
 export async function getSelectedModel():Promise<LocalModel>{
-  try{const saved=JSON.parse(await fs.readFile(configPath,'utf8')).model as string;if(LOCAL_MODELS.some(m=>m.id===saved))return saved as LocalModel}catch{}
-  const env=process.env.OLLAMA_MODEL;
-  return (LOCAL_MODELS.some(m=>m.id===env)?env:'qwen3:8b') as LocalModel;
+  try{const saved=JSON.parse(await fs.readFile(configPath,'utf8')).model as string;if(LOCAL_MODELS.some(m=>m.id===saved))return saved as LocalModel}catch(error){if(error instanceof Error)return fallbackModel()}
+  return fallbackModel();
 }
 export async function setSelectedModel(model:LocalModel){await fs.mkdir(path.dirname(configPath),{recursive:true});const tmp=configPath+'.tmp';await fs.writeFile(tmp,JSON.stringify({model},null,2));await fs.rename(tmp,configPath)}

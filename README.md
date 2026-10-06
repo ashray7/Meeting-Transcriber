@@ -18,13 +18,17 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000. Uploaded files and meeting/task records stay on this machine in `uploads/` and `data/store.json`.
+Open http://localhost:3000. Media stays in `uploads/`; structured state is stored locally in `data/meeting-transcriber.sqlite`. On first startup, the app imports existing `data/store.json` and `data/projects.json` records into SQLite and leaves the source JSON files intact. Project document versions are kept under `data/project-documents/`.
 
 ## Project profiles
 
-Open **Project profiles** in the sidebar to add a project name, description, product surfaces, work areas, project-specific guidance, and reference documents. You can upload text files (`.md`, `.mdx`, `.txt`, `.json`, `.yaml`, `.yml`, `.xml`, `.toml`, `.csv`, plus common source/test formats such as `.ts`, `.py`, and `.sql`) or paste content. PDFs and binary office documents are not parsed. Profiles are stored locally in `data/projects.json`, which is ignored by Git.
+Open **Project profiles** in the sidebar to add project instructions, a glossary, custom task types, product surfaces/components, work areas, team members, assignment rules, and reference documents. Upload PDF, CSV, TXT, Markdown/MDX, JSON, YAML/YML, TOML, TypeScript/TSX, JavaScript/JSX, Python, and SQL files using the document drop zone. Uploads are validated, extracted, normalized, chunked, and indexed before they become ready. PDF text retains page numbers; CSV chunks represent individual rows and retain row and column metadata. PDFs without selectable text are marked as requiring OCR; OCR is not run. Project structures, extracted chunks, and indexes are in SQLite; the original document bytes are stored as immutable local versions under `data/project-documents/`.
 
-Choose a profile when creating a meeting. Its categories and guidance, plus document excerpts relevant to the transcript, are provided to the analysis model. Generated tasks include a product surface, work area, and project document references when the evidence supports them. The meeting stores a snapshot of its selected profile so edits to the profile do not alter past meeting context.
+The profile's **Reference documents** section shows file metadata, version, extraction status, page or CSV dimensions, chunk count, and errors. You can reprocess or remove documents. Retrieval is project-scoped and can be queried locally at `/api/projects/{projectId}/knowledge?q=...`; results include project, document, version, chunk, page/row, and source metadata. Meeting analysis uses the indexed versions captured in that meeting's project snapshot.
+
+Choose a profile when creating a meeting. Its configured categories, instructions, glossary, active roster, assignment rules, and relevant document excerpts are provided to analysis. Generated tasks include a task type, product surface, component, work area, and versioned document references when supported. Each meeting stores a profile snapshot, so later profile or document changes do not rewrite historical context.
+
+Assignees are resolved in this order: explicit accepted assignment in the meeting, matching project rule, responsibility match, skill match, component/work-area ownership, then a model recommendation that must match an active team member. Ambiguous or unknown assignments are left null and flagged for review.
 
 ## GPU acceleration
 
