@@ -20,6 +20,12 @@ npm run dev
 
 Open http://localhost:3000. Uploaded files and meeting/task records stay on this machine in `uploads/` and `data/store.json`.
 
+## Project profiles
+
+Open **Project profiles** in the sidebar to add a project name, description, product surfaces, work areas, project-specific guidance, and reference documents. You can upload text files (`.md`, `.mdx`, `.txt`, `.json`, `.yaml`, `.yml`, `.xml`, `.toml`, `.csv`, plus common source/test formats such as `.ts`, `.py`, and `.sql`) or paste content. PDFs and binary office documents are not parsed. Profiles are stored locally in `data/projects.json`, which is ignored by Git.
+
+Choose a profile when creating a meeting. Its categories and guidance, plus document excerpts relevant to the transcript, are provided to the analysis model. Generated tasks include a product surface, work area, and project document references when the evidence supports them. The meeting stores a snapshot of its selected profile so edits to the profile do not alter past meeting context.
+
 ## GPU acceleration
 
 Whisper uses `whisper.cpp`'s cross-vendor Vulkan backend. It selects a device from the installed Vulkan driver at runtime, so the same build works with AMD and NVIDIA GPUs. Install the GPU vendor's Vulkan-capable driver first. On Ubuntu/Debian, install the build tools and Vulkan SDK headers, then run the setup script:
