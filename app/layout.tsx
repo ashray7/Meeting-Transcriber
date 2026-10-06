@@ -1,0 +1,3 @@
+import './globals.css';import type {Metadata} from 'next';import {Sidebar} from '@/components/sidebar';
+export const metadata:Metadata={title:'Meeting-to-Tickets',description:'Turn meeting recordings into actionable ticket drafts.'};
+export default function RootLayout({children}:{children:React.ReactNode}){return <html lang="en"><body><div className="shell"><Sidebar/><main className="main"><header className="topbar"><div className="crumb">Workspace <span style={{padding:'0 7px',color:'#c1c8c3'}}>/</span> Meeting intelligence</div><div className="avatar">MT</div></header>{children}</main></div></body></html>}
