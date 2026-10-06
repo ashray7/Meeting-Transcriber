@@ -8,10 +8,19 @@ export interface TranscriptionWithAudioResult {
  cleanup: () => Promise<void>;
 }
 
-export async function transcribeWithAudio(file:File):Promise<TranscriptionWithAudioResult>{
+export async function transcribeWithAudio(file:File, options?: { signal?: AbortSignal }):Promise<TranscriptionWithAudioResult>{
+ const signal = options?.signal;
+ if (signal?.aborted) throw new Error('Processing was stopped by user.');
  const provider=process.env.AI_PROVIDER||'ollama';
  if(provider==='demo'){
-  await new Promise(r=>setTimeout(r,400));
+  await new Promise((r, reject) => {
+    if (signal?.aborted) return reject(new Error('Processing was stopped by user.'));
+    const timer = setTimeout(r, 400);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(new Error('Processing was stopped by user.'));
+    });
+  });
   const rawSegments:RawWhisperSegment[]=[
    {startMs:0,endMs:8000,text:'Alex: We need to address a bug where payment callbacks fail when transactions time out.'},
    {startMs:8000,endMs:16000,text:'Priya: Let’s add retry handling with a limit and log each failed attempt. Alex, can you take that?'},
@@ -27,9 +36,9 @@ export async function transcribeWithAudio(file:File):Promise<TranscriptionWithAu
  if(provider==='ollama'){
   const dir=await mkdtemp(path.join(os.tmpdir(),'meeting-whisper-'));const safeName=file.name.replace(/[^\w.-]/g,'_')||'recording';const input=path.join(dir,safeName);const audio=path.join(dir,'normalized.wav');
   await writeFile(input,Buffer.from(await file.arrayBuffer()));
-  try{await execFileAsync(process.env.FFMPEG_BIN||'ffmpeg',['-nostdin','-hide_banner','-loglevel','error','-y','-i',input,'-vn','-ac','1','-ar','16000','-c:a','pcm_s16le',audio],{timeout:Number(process.env.FFMPEG_TIMEOUT_MS||900000),maxBuffer:4*1024*1024})}catch(e){const message=e instanceof Error?e.message:'FFmpeg failed';await rm(dir,{recursive:true,force:true});throw new Error(`Could not prepare meeting audio: ${message}. Confirm FFmpeg is installed and the recording is readable.`)}
+  try{await execFileAsync(process.env.FFMPEG_BIN||'ffmpeg',['-nostdin','-hide_banner','-loglevel','error','-y','-i',input,'-vn','-ac','1','-ar','16000','-c:a','pcm_s16le',audio],{signal,timeout:Number(process.env.FFMPEG_TIMEOUT_MS||900000),maxBuffer:4*1024*1024})}catch(e){await rm(dir,{recursive:true,force:true});if(signal?.aborted||(e as {name?:string})?.name==='AbortError')throw new Error('Processing was stopped by user.');const message=e instanceof Error?e.message:'FFmpeg failed';throw new Error(`Could not prepare meeting audio: ${message}. Confirm FFmpeg is installed and the recording is readable.`)}
   const binary=(process.env.WHISPER_BIN||path.join(os.homedir(),'.local/bin/whisper-cli')).replace(/^~(?=\/)/,os.homedir());const model=(process.env.WHISPER_MODEL||'small').trim();const modelPath=(process.env.WHISPER_MODEL_PATH||path.join(os.homedir(),'.local/share/meeting-to-tickets',`ggml-${model}.bin`)).replace(/^~(?=\/)/,os.homedir());const output=path.join(dir,'transcript');const args=['-m',modelPath,'-f',audio,'-oj','-np','-of',output,'-t',process.env.WHISPER_THREADS||'4'];if(process.env.WHISPER_USE_GPU==='false')args.push('-ng');
-  try{await execFileAsync(binary,args,{timeout:Number(process.env.WHISPER_TIMEOUT_MS||2700000),maxBuffer:4*1024*1024,env:{...process.env,LD_LIBRARY_PATH:[process.env.LD_LIBRARY_PATH,path.join(os.homedir(),'.local/lib')].filter(Boolean).join(path.delimiter)}})}catch(e){const message=e instanceof Error?e.message:'Whisper failed';await rm(dir,{recursive:true,force:true});throw new Error(`GPU Whisper transcription failed: ${message}. Check that whisper.cpp was built with Vulkan and that ggml-small.bin is installed.`)}
+  try{await execFileAsync(binary,args,{signal,timeout:Number(process.env.WHISPER_TIMEOUT_MS||2700000),maxBuffer:4*1024*1024,env:{...process.env,LD_LIBRARY_PATH:[process.env.LD_LIBRARY_PATH,path.join(os.homedir(),'.local/lib')].filter(Boolean).join(path.delimiter)}})}catch(e){await rm(dir,{recursive:true,force:true});if(signal?.aborted||(e as {name?:string})?.name==='AbortError')throw new Error('Processing was stopped by user.');const message=e instanceof Error?e.message:'Whisper failed';throw new Error(`GPU Whisper transcription failed: ${message}. Check that whisper.cpp was built with Vulkan and that ggml-small.bin is installed.`)}
   const result=JSON.parse(await readFile(`${output}.json`,'utf8'));
   const rawSegments:RawWhisperSegment[]=[];
   if(Array.isArray(result.transcription)&&result.transcription.length){
@@ -57,7 +66,7 @@ export async function transcribeWithAudio(file:File):Promise<TranscriptionWithAu
  if(provider!=='openai')throw new Error(`Unsupported AI_PROVIDER: ${provider}`);
  const key=process.env.OPENAI_API_KEY;if(!key)throw new Error('OPENAI_API_KEY is missing. Set AI_PROVIDER=ollama to use local models.');
  const body=new FormData();body.set('file',file,file.name);body.set('model',process.env.OPENAI_TRANSCRIPTION_MODEL||'whisper-1');body.set('response_format','verbose_json');
- const res=await fetch('https://api.openai.com/v1/audio/transcriptions',{method:'POST',headers:{Authorization:`Bearer ${key}`},body});if(!res.ok)throw new Error(`Transcription provider error (${res.status}): ${await res.text()}`);const result=await res.json();
+ const res=await fetch('https://api.openai.com/v1/audio/transcriptions',{method:'POST',signal,headers:{Authorization:`Bearer ${key}`},body});if(!res.ok)throw new Error(`Transcription provider error (${res.status}): ${await res.text()}`);const result=await res.json();
  const rawSegments:RawWhisperSegment[]=[];
  if(Array.isArray(result.segments)&&result.segments.length){
   for(const s of result.segments){

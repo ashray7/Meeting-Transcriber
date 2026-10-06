@@ -23,7 +23,7 @@ export const diarizationResultSchema = z.object({
 
 export interface SpeakerDiarizationService {
   isAvailable(): Promise<{ available: boolean; reason?: string }>;
-  diarize(audioPath: string): Promise<SpeakerDiarizationResult>;
+  diarize(audioPath: string, options?: { signal?: AbortSignal }): Promise<SpeakerDiarizationResult>;
 }
 
 export class PyannoteDiarizationService implements SpeakerDiarizationService {
@@ -80,7 +80,10 @@ export class PyannoteDiarizationService implements SpeakerDiarizationService {
     }
   }
 
-  async diarize(audioPath: string): Promise<SpeakerDiarizationResult> {
+  async diarize(audioPath: string, options?: { signal?: AbortSignal }): Promise<SpeakerDiarizationResult> {
+    if (options?.signal?.aborted) {
+      throw new Error('Processing was stopped by user.');
+    }
     if (!existsSync(audioPath)) {
       throw new Error(`Audio file not found for diarization: ${audioPath}`);
     }
@@ -99,6 +102,7 @@ export class PyannoteDiarizationService implements SpeakerDiarizationService {
     let stdout: string;
     try {
       const result = await execFileAsync(this.pythonBin, args, {
+        signal: options?.signal,
         timeout: this.timeoutMs,
         maxBuffer: 16 * 1024 * 1024,
         env: {
@@ -109,6 +113,9 @@ export class PyannoteDiarizationService implements SpeakerDiarizationService {
       });
       stdout = result.stdout;
     } catch (err: unknown) {
+      if (options?.signal?.aborted || (err as { name?: string })?.name === 'AbortError') {
+        throw new Error('Processing was stopped by user.');
+      }
       const error = err as { stdout?: string; stderr?: string; message?: string };
       let errorDetail = error.message || 'Diarization subprocess failed';
       if (error.stdout) {

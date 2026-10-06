@@ -94,6 +94,7 @@ export function MeetingDetail({ initial }: { initial: Payload }) {
     totalDurationMs: number;
   }>>([]);
   const [mappingSpeakerId, setMappingSpeakerId] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
 
   const router = useRouter();
 
@@ -160,6 +161,24 @@ export function MeetingDetail({ initial }: { initial: Payload }) {
   async function retry() {
     await fetch(`/api/meetings/${data.meeting.id}/process`, { method: 'POST' });
     await refresh();
+  }
+
+  async function handleStop() {
+    setStopping(true);
+    try {
+      const res = await fetch(`/api/meetings/${data.meeting.id}/stop`, { method: 'POST' });
+      if (res.ok) {
+        setToast('Processing stopped');
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setToast(err.error || 'Failed to stop processing');
+      }
+      await refresh();
+    } catch {
+      setToast('Network error stopping processing');
+    } finally {
+      setStopping(false);
+    }
   }
 
   function jumpToSegment(segmentId?: string) {
@@ -351,7 +370,7 @@ export function MeetingDetail({ initial }: { initial: Payload }) {
   if (['processing', 'queued', 'transcribing', 'transcribed', 'analyzing', 'failed'].includes(data.meeting.status)) {
     return (
       <>
-        <ProcessingView meeting={data.meeting} onRetry={retry} />
+        <ProcessingView meeting={data.meeting} onRetry={retry} onStop={handleStop} isStopping={stopping} />
         <Toast message={toast} onClose={() => setToast(null)} />
       </>
     );
