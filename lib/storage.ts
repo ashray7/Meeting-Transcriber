@@ -114,7 +114,29 @@ export class SqliteStorage implements Storage{
   const payload={...task,assignee:member?.id||null,assigneeName:member?.name||null,rejectionReason:task.rejectionReason||null,createdTicketId:task.createdTicketId||null};stmt.run(task.id,task.meetingId,projectId,task.title,task.description,taskTypeId,task.type||'',surfaceId,areaId,componentId,member?.id||null,task.priority||'',task.status,task.assignmentSource||'unassigned',task.assignmentNeedsReview?1:0,task.assignmentReason,task.rejectionReason||null,task.createdTicketId||null,JSON.stringify(payload),task.createdAt,task.updatedAt);
   this.db.prepare('DELETE FROM ticket_document_refs WHERE ticket_id=?').run(task.id);const refInsert=this.db.prepare('INSERT INTO ticket_document_refs(ticket_id,document_version_id,title) VALUES(?,?,?)');for(const id of task.referenceVersionIds||[]){if(!snapshot?.documents.some(d=>d.currentVersionId===id))throw new Error('Ticket references a document version outside its meeting profile snapshot.');const doc=snapshot.documents.find(d=>d.currentVersionId===id)!;refInsert.run(task.id,id,doc.filename)}
  }
- private tasksForMeeting(meetingId:string){return(this.db.prepare('SELECT * FROM tickets WHERE meeting_id=? ORDER BY created_at').all(meetingId) as Row[]).map(r=>this.taskFromRow(r))}
+ private tasksForMeeting(meetingId:string){
+  const rows=(this.db.prepare('SELECT * FROM tickets WHERE meeting_id=? ORDER BY created_at').all(meetingId) as Row[]);
+  if(rows.length>0)return rows.map(r=>this.taskFromRow(r));
+  const candidateRows=this.db.prepare("SELECT * FROM task_candidates WHERE meeting_id=? AND intent IN ('committed', 'proposed', 'unclear') ORDER BY created_at, id").all(meetingId) as Row[];
+  const rescuedTasks:Task[]=[];
+  for(const cRow of candidateRows){
+   const payload=json<Record<string,unknown>>(cRow.payload_json,{});
+   const task=payload.task as Task|undefined;
+   if(task&&task.id&&task.title){
+    rescuedTasks.push(task);
+   }
+  }
+  if(rescuedTasks.length>0){
+   try{
+    const txn=this.db.transaction(()=>rescuedTasks.forEach(t=>this.writeTask(t)));
+    txn();
+    return(this.db.prepare('SELECT * FROM tickets WHERE meeting_id=? ORDER BY created_at').all(meetingId) as Row[]).map(r=>this.taskFromRow(r));
+   }catch{
+    return rescuedTasks;
+   }
+  }
+  return[];
+ }
  private taskFromRow(r:Row):Task{const payload=json<Task>(r.payload_json,{} as Task);const refs=this.db.prepare('SELECT title,document_version_id FROM ticket_document_refs WHERE ticket_id=? ORDER BY title').all(r.id) as Row[];const member=r.assigned_member_id?this.db.prepare('SELECT name FROM project_members WHERE id=?').get(r.assigned_member_id) as Row|undefined:undefined;let status:TaskReviewStatus=(r.status as TaskReviewStatus)||payload.status||'detected';if(status==='draft'){status=(r.assignment_needs_review||payload.assignmentNeedsReview||payload.classificationNeedsReview||(payload.confidence!=null&&payload.confidence<0.75))?'review_required':'detected'}return{...payload,status,rejectionReason:r.rejection_reason??payload.rejectionReason??null,createdTicketId:r.created_ticket_id??payload.createdTicketId??null,assignee:r.assigned_member_id||null,assigneeName:member?.name||payload.assigneeName||null,projectReferences:refs.length?refs.map(x=>x.title):payload.projectReferences||[],referenceVersionIds:refs.length?refs.map(x=>x.document_version_id):payload.referenceVersionIds||[],assignmentSource:r.assignment_source,assignmentNeedsReview:!!r.assignment_needs_review,assignmentReason:r.assignment_reason}}
  private hydrateTask(task:Task){if(!task.assignee)return{...task,assigneeName:null};const row=this.db.prepare('SELECT name FROM project_members WHERE id=?').get(task.assignee) as Row|undefined;return{...task,assigneeName:row?.name||task.assignee}}
  private ticketFromRow(r:Row):Ticket{return{id:r.id,projectId:r.project_id||null,sourceTaskId:r.source_task_id,meetingId:r.meeting_id||null,title:r.title,description:r.description,context:r.context||null,expectedOutcome:r.expected_outcome||null,taskType:r.task_type||null,productSurface:r.product_surface||null,component:r.component||null,workArea:r.work_area||null,priority:(r.priority as Priority)||null,assignee:r.assignee||null,assigneeName:r.assignee_name||null,deadline:r.deadline||null,acceptanceCriteria:json<string[]>(r.acceptance_criteria_json,[]),status:r.status as TicketStatus,createdAt:r.created_at,updatedAt:r.updated_at,sourceEvidence:json<MeetingTaskEvidence[]>(r.source_evidence_json,[]),projectReferences:json<ProjectReferenceEvidence[]>(r.project_references_json,[]),externalKey:r.external_key||null,provider:r.provider||'internal'}}

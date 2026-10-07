@@ -531,9 +531,37 @@ export function MeetingDetail({ initial }: { initial: Payload }) {
                 </div>
                 {group.map(candidate => {
                   const payload = payloadOf(candidate);
+                  const isInTasks = tasks.some(t => t.title.toLowerCase() === (payload.summary || '').toLowerCase() || t.context?.toLowerCase() === (payload.summary || '').toLowerCase());
                   return (
                     <article className="candidate-card" key={candidate.id} style={{ marginTop: 10 }}>
-                      <div className="task-title">{payload.summary || 'Unspecified candidate'}</div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                        <div className="task-title">{payload.summary || 'Unspecified candidate'}</div>
+                        {isInTasks ? (
+                          <span className="badge badge-green" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>In review queue</span>
+                        ) : payload.task ? (
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+                            disabled={busy}
+                            onClick={async () => {
+                              setBusy(true);
+                              const res = await fetch(`/api/meetings/${data.meeting.id}/tasks`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(payload.task)
+                              });
+                              setBusy(false);
+                              if (res.ok) {
+                                await refresh();
+                                setToast('Added to ticket review queue');
+                              }
+                            }}
+                          >
+                            <Plus size={12} /> Add to review
+                          </button>
+                        ) : null}
+                      </div>
                       <div className="task-meta">
                         <span className="badge">{payload.kind?.replace('_', ' ') || 'candidate'}</span>
                         <span className="badge">{candidate.intent}</span>
@@ -742,17 +770,17 @@ export function MeetingDetail({ initial }: { initial: Payload }) {
                 {needsReview && (
                   <div
                     style={{
-                      background: '#fff8e1',
-                      border: '1px solid #ffe082',
+                      background: '#2b220e',
+                      border: '1px solid #574316',
                       borderRadius: 6,
                       padding: '8px 12px',
                       marginTop: 8,
                       fontSize: 11,
-                      color: '#795548'
+                      color: '#fde68a'
                     }}
                   >
                     <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 5 }}>
-                      <AlertCircle size={13} color="#f57c00" /> Review signals
+                      <AlertCircle size={13} color="#fbbf24" /> Review signals
                     </div>
                     <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
                       {task.classificationReviewReasons?.map((r, i) => (
@@ -769,13 +797,13 @@ export function MeetingDetail({ initial }: { initial: Payload }) {
                 {isRejected && task.rejectionReason && (
                   <div
                     style={{
-                      background: '#fbe9e7',
-                      border: '1px solid #ffccbc',
+                      background: '#2d1414',
+                      border: '1px solid #5c2222',
                       borderRadius: 6,
                       padding: '8px 12px',
                       marginTop: 8,
                       fontSize: 11,
-                      color: '#bf360c'
+                      color: '#fca5a5'
                     }}
                   >
                     <strong>Rejection reason:</strong> {task.rejectionReason}
@@ -830,18 +858,18 @@ export function MeetingDetail({ initial }: { initial: Payload }) {
                             fontSize: 11,
                             marginTop: 4,
                             padding: '6px 8px',
-                            background: '#fcfaf7',
-                            border: '1px solid #eee5d8',
+                            background: 'var(--surface-subtle)',
+                            border: '1px solid var(--border)',
                             borderRadius: 6
                           }}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                            <FileText size={12} color="#5a3286" />
-                            <strong style={{ color: '#333' }}>{ref.filename}</strong>
+                            <FileText size={12} color="#c084fc" />
+                            <strong style={{ color: 'var(--text)' }}>{ref.filename}</strong>
                             {ref.pageNumber && <span className="ref-pill">Page {ref.pageNumber}</span>}
                             {ref.rowNumber && <span className="ref-pill">Row {ref.rowNumber}</span>}
                           </div>
-                          <div style={{ fontStyle: 'italic', color: '#555' }}>“{ref.excerpt}”</div>
+                          <div style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>“{ref.excerpt}”</div>
                         </div>
                       ))}
                     </div>
@@ -870,19 +898,19 @@ export function MeetingDetail({ initial }: { initial: Payload }) {
                     alignItems: 'center',
                     marginTop: 16,
                     paddingTop: 12,
-                    borderTop: '1px solid #eef0ee'
+                    borderTop: '1px solid var(--border)'
                   }}
                 >
-                  <div style={{ fontSize: 11, color: '#888' }}>
+                  <div style={{ fontSize: 11, color: 'var(--muted)' }}>
                     {isCreated ? (
-                      <span style={{ color: '#176b50', fontWeight: 600 }}>
+                      <span style={{ color: 'var(--primary)', fontWeight: 600 }}>
                         <TicketIcon size={12} style={{ display: 'inline', verticalAlign: '-1px', marginRight: 4 }} />
                         Ticket created
                       </span>
                     ) : isRejected ? (
                       <span>Rejected candidate</span>
                     ) : isApproved ? (
-                      <span style={{ color: '#2e7d32', fontWeight: 600 }}>Approved · Ready to create ticket</span>
+                      <span style={{ color: '#4ade80', fontWeight: 600 }}>Approved · Ready to create ticket</span>
                     ) : (
                       <span>Pending human review</span>
                     )}
@@ -953,7 +981,9 @@ export function MeetingDetail({ initial }: { initial: Payload }) {
 
           {!filteredTasks.length && (
             <div className="card empty">
-              No task candidates found matching the selected filter ({activeFilter.replace('_', ' ')}).
+              {tasks.length === 0
+                ? 'No task candidates found for this meeting. Click "+ Add task candidate" above to create one.'
+                : `No task candidates found with status "${activeFilter.replace('_', ' ')}".`}
             </div>
           )}
 
@@ -1107,7 +1137,8 @@ export function MeetingDetail({ initial }: { initial: Payload }) {
               onClick={() => setTranscriptOpen(!transcriptOpen)}
               style={{
                 border: 0,
-                background: 'white',
+                background: 'transparent',
+                color: 'inherit',
                 width: '100%',
                 padding: '16px 18px',
                 display: 'flex',

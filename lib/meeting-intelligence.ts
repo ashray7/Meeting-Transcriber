@@ -9,7 +9,37 @@ export type CandidateGroupResult=z.infer<typeof reconciliationSchema>;
 export type DraftModelOutput=z.infer<typeof taskDraftOutputSchema>;
 export function chunkTranscriptSegments(segments:TranscriptSegment[],maxCharacters=12000,overlapSegments=1){const chunks:TranscriptSegment[][]=[];let current:TranscriptSegment[]=[],size=0;for(const segment of segments){const additions=segment.text.length>maxCharacters?splitOversizedSegment(segment,maxCharacters):[segment];for(const part of additions){if(current.length&&size+part.text.length>maxCharacters){chunks.push(current);const overlap=current.slice(-overlapSegments);current=[...overlap,part];size=current.reduce((sum,x)=>sum+x.text.length,0);if(size>maxCharacters){chunks[chunks.length-1]=current.slice(0,-1);current=[part];size=part.text.length}}else{current.push(part);size+=part.text.length}}}if(current.length)chunks.push(current);return chunks.filter(chunk=>chunk.length)}
 function splitOversizedSegment(segment:TranscriptSegment,maxCharacters:number){const parts:TranscriptSegment[]=[];for(let offset=0;offset<segment.text.length;offset+=maxCharacters)parts.push({...segment,text:segment.text.slice(offset,offset+maxCharacters)});return parts}
-export function reconcileCandidateGroups(input:DetectedCandidate[],result:CandidateGroupResult,segments:TranscriptSegment[]){const ids=new Set(segments.map(x=>x.id));const claimed=new Set<number>();const groups:ReconciledCandidate[]=[];for(const group of result.groups){const indexes=[...new Set(group.candidateIndexes)].filter(index=>index>=0&&index<input.length&&!claimed.has(index));if(!indexes.length)continue;const isMerge=indexes.length>1;if(isMerge&&!group.mergeRationale?.trim()){for(const index of indexes){claimed.add(index);const item=input[index];const evidenceSegmentIds=item.evidenceSegmentIds.filter(id=>ids.has(id));if(evidenceSegmentIds.length)groups.push({kind:item.kind,intent:item.intent,summary:item.summary,evidenceSegmentIds,assignee:null,assignmentEvidence:'none',deadlinePhrase:null,confidence:item.confidence,mergeRationale:null})}continue}const evidenceSegmentIds=[...new Set(indexes.flatMap(index=>input[index].evidenceSegmentIds))].filter(id=>ids.has(id));if(!evidenceSegmentIds.length)continue;indexes.forEach(index=>claimed.add(index));groups.push({kind:group.kind,intent:group.intent,summary:group.summary,evidenceSegmentIds,assignee:group.assignee,assignmentEvidence:group.assignmentEvidence,deadlinePhrase:group.deadlinePhrase,confidence:group.confidence,mergeRationale:group.mergeRationale})}for(let index=0;index<input.length;index++){if(claimed.has(index))continue;const item=input[index],evidenceSegmentIds=item.evidenceSegmentIds.filter(id=>ids.has(id));if(evidenceSegmentIds.length)groups.push({kind:item.kind,intent:'unclear',summary:item.summary,evidenceSegmentIds,assignee:null,assignmentEvidence:'none',deadlinePhrase:null,confidence:Math.min(item.confidence,0.5),mergeRationale:null})}return groups}
+export function reconcileCandidateGroups(input:DetectedCandidate[],result:CandidateGroupResult,segments:TranscriptSegment[]){
+ const ids=new Set(segments.map(x=>x.id));
+ const claimed=new Set<number>();
+ const groups:ReconciledCandidate[]=[];
+ for(const group of result.groups){
+  const rationale=(group.mergeRationale||'').trim().toLowerCase();
+  const isFalseMerge=!rationale||rationale==='no merge needed'||rationale==='none'||rationale==='no merge'||rationale==='null'||rationale.includes('no merge')||rationale.includes('separate');
+  const indexes=[...new Set(group.candidateIndexes)].filter(index=>index>=0&&index<input.length&&!claimed.has(index));
+  if(!indexes.length)continue;
+  const isMerge=indexes.length>1;
+  if(isMerge&&isFalseMerge){
+   for(const index of indexes){
+    claimed.add(index);
+    const item=input[index];
+    const evidenceSegmentIds=item.evidenceSegmentIds.filter(id=>ids.has(id));
+    if(evidenceSegmentIds.length)groups.push({kind:item.kind,intent:item.intent,summary:item.summary,evidenceSegmentIds,assignee:null,assignmentEvidence:'none',deadlinePhrase:null,confidence:item.confidence,mergeRationale:null});
+   }
+   continue;
+  }
+  const evidenceSegmentIds=[...new Set(indexes.flatMap(index=>input[index].evidenceSegmentIds))].filter(id=>ids.has(id));
+  if(!evidenceSegmentIds.length)continue;
+  indexes.forEach(index=>claimed.add(index));
+  groups.push({kind:group.kind,intent:group.intent,summary:group.summary,evidenceSegmentIds,assignee:group.assignee,assignmentEvidence:group.assignmentEvidence,deadlinePhrase:group.deadlinePhrase,confidence:group.confidence,mergeRationale:group.mergeRationale});
+ }
+ for(let index=0;index<input.length;index++){
+  if(claimed.has(index))continue;
+  const item=input[index],evidenceSegmentIds=item.evidenceSegmentIds.filter(id=>ids.has(id));
+  if(evidenceSegmentIds.length)groups.push({kind:item.kind,intent:item.intent,summary:item.summary,evidenceSegmentIds,assignee:null,assignmentEvidence:'none',deadlinePhrase:null,confidence:item.confidence,mergeRationale:null});
+ }
+ return groups;
+}
 export function canonicalEvidence(meetingId:string,segmentIds:string[],segments:TranscriptSegment[],quotes:{segmentId:string;quote:string}[]=[]){const byId=new Map(segments.map(segment=>[segment.id,segment]));const quoteById=new Map(quotes.map(item=>[item.segmentId,item.quote]));return[...new Set(segmentIds)].flatMap(segmentId=>{const segment=byId.get(segmentId);if(!segment)return[];const requested=quoteById.get(segmentId);const quote=requested&&segment.text.toLocaleLowerCase().includes(requested.toLocaleLowerCase())?requested:segment.text.slice(0,2000);return[{meetingId,segmentId,speaker:segment.speaker,startMs:segment.startMs,endMs:segment.endMs,sourceText:segment.text,quote}]})}
 export function normalizeSupportedDeadline(rawPhrase:string|null,evidence:MeetingTaskEvidence[]){if(!rawPhrase||!evidence.some(item=>item.sourceText.toLocaleLowerCase().includes(rawPhrase.toLocaleLowerCase())))return null;const phrase=rawPhrase.trim();let normalizedDate:string|null=null;const iso=phrase.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);const named=phrase.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(20\d{2})\b/i)||phrase.match(/\b(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(20\d{2})\b/i);if(iso){const date=new Date(`${iso[1]}-${iso[2]}-${iso[3]}T00:00:00Z`);if(!Number.isNaN(date.valueOf())&&date.toISOString().slice(0,10)===iso[0])normalizedDate=iso[0]}else if(named){const monthNames=['january','february','march','april','may','june','july','august','september','october','november','december'];const monthWord=named[1].toLocaleLowerCase().match(/^[a-z]+$/i)?named[1]:named[2];const day=named[1]===monthWord?named[2]:named[1];const year=named[1]===monthWord?named[3]:named[3];const month=monthNames.indexOf(monthWord.toLocaleLowerCase())+1;const date=new Date(Date.UTC(Number(year),month-1,Number(day)));if(month&&date.getUTCMonth()===month-1&&date.getUTCDate()===Number(day))normalizedDate=date.toISOString().slice(0,10)}return{rawPhrase:phrase,normalizedDate}}
 function exactLabel<T extends {name:string}>(value:string|null,items:T[]|undefined){if(!value||!items)return null;return items.find(item=>item.name.toLocaleLowerCase()===value.trim().toLocaleLowerCase())?.name||null}

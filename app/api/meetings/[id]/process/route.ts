@@ -77,6 +77,12 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
               meeting.speakerCount = diarizationResult.speakerCount;
               meeting.diarizationError = null;
 
+              meeting.stage = 'Aligning transcript & speakers';
+              meeting.diagnostic = 'Combining Whisper speech timestamps with pyannote speaker turn boundaries...';
+              meeting.progress = 45;
+              meeting.updatedAt = new Date().toISOString();
+              await saveMeeting(meeting);
+
               const alignmentStart = Date.now();
               alignedSegments = alignWhisperWithDiarization(transcriptionResult.segments, diarizationResult.segments, id);
               const alignmentDurationMs = Date.now() - alignmentStart;
@@ -195,9 +201,20 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
         logger.info('Meeting processing stopped by user', { meetingId: id });
       } else {
         meeting.status = 'failed';
-        meeting.stage = null;
+        meeting.stage = meeting.stage || 'Processing';
         meeting.diagnostic = null;
-        meeting.error = error instanceof Error ? error.message : 'Processing failed. Please retry.';
+        let errMsg = error instanceof Error ? error.message : 'Processing failed. Please retry.';
+        try {
+          if (errMsg.trim().startsWith('[')) {
+            const parsed = JSON.parse(errMsg);
+            if (Array.isArray(parsed) && parsed[0]?.message) {
+              errMsg = `Output structure error during ${meeting.stage || 'analysis'}: ${parsed[0].message} (path: ${parsed[0].path?.join('.') || 'root'})`;
+            }
+          }
+        } catch {
+          // keep original errMsg
+        }
+        meeting.error = errMsg;
         meeting.updatedAt = new Date().toISOString();
         await saveMeeting(meeting);
         logger.error('Meeting processing failed', { meetingId: id }, error);

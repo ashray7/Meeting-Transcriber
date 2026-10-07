@@ -67,5 +67,148 @@ describe('AI response schemas tolerance', () => {
 
     expect(result.groups[0].intent).toBe('committed');
   });
+
+  it('safely normalizes nested group arrays and string indexes from models like Llama 3.2', async () => {
+    const { reconciliationSchema } = await import('./validation');
+    const result = reconciliationSchema.parse({
+      summary: 'Meeting summary',
+      groups: [
+        [{
+          candidateIndexes: ['0'],
+          kind: 'action',
+          intent: 'agreed',
+          summary: 'Fix payment timeout bug',
+          assignee: 'None',
+          assignmentEvidence: 'seg-1',
+          deadlinePhrase: 'None',
+          confidence: 'None',
+          mergeRationale: 'None'
+        }],
+        ['1']
+      ],
+      decisions: [{
+        text: 'Fix payment bug',
+        candidateIndexes: ['0']
+      }],
+      openQuestions: [{
+        text: 'Who will test?',
+        candidateIndexes: ['1']
+      }]
+    });
+
+    expect(result.groups).toHaveLength(2);
+    expect(result.groups[0].candidateIndexes).toEqual([0]);
+    expect(result.groups[0].kind).toBe('committed_action');
+    expect(result.groups[0].intent).toBe('committed');
+    expect(result.groups[0].assignee).toBeNull();
+    expect(result.groups[0].deadlinePhrase).toBeNull();
+    expect(result.decisions[0].candidateIndexes).toEqual([0]);
+    expect(result.openQuestions[0].candidateIndexes).toEqual([1]);
+  });
+
+  it('safely handles null chunkId and string IDs in taskDraftBatchSchema', async () => {
+    const { taskDraftBatchSchema } = await import('./validation');
+    const result = taskDraftBatchSchema.parse({
+      tasks: [{
+        candidateIndex: 0,
+        title: 'Edit username feature',
+        description: 'Allow users to edit their username in profile settings',
+        taskType: 'Feature',
+        productSurface: 'Profile',
+        workArea: 'Frontend',
+        component: null,
+        priority: 'medium',
+        mentionedPeople: ['SPEAKER_00'],
+        deadlinePhrase: null,
+        acceptanceCriteria: ['Users can change their display name'],
+        confidence: 0.9,
+        evidenceQuotes: [{
+          segmentId: 'seg-0',
+          quote: 'We should create a new feature in our application to edit the user name.'
+        }],
+        projectChunkExcerpts: [{
+          chunkId: null,
+          excerpt: null
+        }],
+        priorityEvidence: {
+          source: 'none',
+          segmentIds: [],
+          chunkIds: [],
+          explanation: ''
+        }
+      }]
+    });
+
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0].projectChunkExcerpts).toEqual([]);
+    expect(result.tasks[0].acceptanceCriteria[0].text).toBe('Users can change their display name');
+    expect(result.tasks[0].evidenceQuotes[0].segmentId).toBe('seg-0');
+  });
+
+  it('safely handles empty candidate summary, missing summary, and empty decisions in candidateDetectionSchema', async () => {
+    const { candidateDetectionSchema } = await import('./validation');
+    const result = candidateDetectionSchema.parse({
+      candidates: [
+        {
+          kind: 'discussion',
+          intent: 'unclear',
+          summary: '', // reproduces user error: String must contain at least 1 character(s) (path: candidates.3.summary)
+          evidenceSegmentIds: ['seg-1'],
+          confidence: 0.8
+        },
+        {
+          kind: 'idea',
+          intent: 'proposed',
+          summary: null,
+          evidenceSegmentIds: ['seg-2']
+        },
+        {
+          kind: 'committed_action',
+          intent: 'committed',
+          summary: 'a'.repeat(600), // exceeds 500 chars
+          evidenceSegmentIds: []
+        }
+      ],
+      topics: ['Topic 1', null, ''],
+      decisions: [
+        { text: '', evidenceSegmentIds: [] },
+        { text: 'Valid decision', evidenceSegmentIds: ['seg-1'] }
+      ],
+      openQuestions: [
+        { text: ' ', evidenceSegmentIds: [] },
+        { text: 'Valid question?', evidenceSegmentIds: [] }
+      ]
+    });
+
+    expect(result.candidates).toHaveLength(3);
+    expect(result.candidates[0].summary).toBe('Discussion item');
+    expect(result.candidates[1].summary).toBe('Discussion item');
+    expect(result.candidates[2].summary.length).toBe(500);
+    expect(result.decisions).toHaveLength(1);
+    expect(result.decisions[0].text).toBe('Valid decision');
+    expect(result.openQuestions).toHaveLength(1);
+    expect(result.openQuestions[0].text).toBe('Valid question?');
+  });
+
+  it('safely parses direct array output in taskDraftBatchSchema and empty strings in tasks', async () => {
+    const { taskDraftBatchSchema } = await import('./validation');
+    const result = taskDraftBatchSchema.parse([
+      {
+        candidateIndex: 0,
+        title: '',
+        description: '',
+        taskType: null,
+        priority: null,
+        acceptanceCriteria: [''],
+        evidenceQuotes: [{ segmentId: 'seg-1', quote: '' }]
+      }
+    ]);
+
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0].title).toBe('Untitled Task');
+    expect(result.tasks[0].description).toBe('No description provided');
+    expect(result.tasks[0].acceptanceCriteria).toHaveLength(0);
+    expect(result.tasks[0].evidenceQuotes).toHaveLength(0);
+  });
 });
 
